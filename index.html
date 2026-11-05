@@ -635,6 +635,14 @@
         .module-section-nav button.active { background:var(--brand); border-color:var(--brand); color:var(--on-brand); }
         @media(max-width:640px) { .module-form { grid-template-columns:1fr; } .module-hero { padding:1.1rem; } .module-card { padding:.9rem; } }
         @media(min-width:768px) { .nav-rail { width:17rem; } .page { padding-top:1.65rem; } }
+        /* === Perbaikan menu samping di HP: bisa di-scroll sampai bawah, tombol Keluar tidak tertutup menu bawah === */
+        @media (max-width:767.98px) {
+            body .nav-scrim { position:fixed; inset:0; z-index:80; }
+            body .nav-rail { z-index:90; top:0; bottom:auto; height:100vh; height:100dvh; overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; background:var(--surface); }
+            body .nav-rail .nav-head { flex:none; }
+            body .nav-rail .nav-scroll { flex:none; overflow:visible; }
+            body .nav-rail .nav-foot { flex:none; margin-top:auto; padding-bottom:calc(env(safe-area-inset-bottom,0px) + 1.5rem); }
+        }
     </style>
 </head>
 <body class="antialiased">
@@ -1710,7 +1718,7 @@ useEffect(() => {
                 <div className={`app print:static print:bg-white print:overflow-visible w-full ${getFontSizeClass()}`}>
 
                     {isMobileMenuOpen && (
-                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-40 md:hidden" onClick={() => setIsMobileMenuOpen(false)}></div>
+                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm md:hidden nav-scrim" onClick={() => setIsMobileMenuOpen(false)}></div>
                     )}
 
                     <nav aria-label="Menu utama" className={`nav-rail no-print ${isMobileMenuOpen ? 'open' : ''}`}>
