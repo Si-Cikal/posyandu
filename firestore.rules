@@ -1,10 +1,129 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Data aplikasi Posyandu ILP: settings (jadwal, sandi), cadres, participants,
-    // attendances, health, complaints. Hanya pengguna yang sudah login (anonim) yang boleh akses.
-    match /artifacts/{appId}/public/data/{document=**} {
-      allow read, write: if request.auth != null;
+
+    // ---------- Peran (dari email akun Firebase Authentication) ----------
+    // Akun petugas: admin@posyandu.invalid, mawar1@... sampai mawar5@posyandu.invalid
+    // WAJIB: matikan "Enable create (sign-up)" di Authentication > Settings > User actions,
+    // supaya tidak ada orang lain yang bisa mendaftar dengan email serupa.
+    function isStaff() {
+      return request.auth != null && request.auth.token.email != null
+        && request.auth.token.email.matches('^(admin|mawar[1-5])@posyandu\\.invalid$');
     }
+    function isAdmin() { return isStaff() && request.auth.token.email == 'admin@posyandu.invalid'; }
+    function myPos()   { return request.auth.token.email.split('@')[0]; }
+
+    function canReadOld()  { return isAdmin() || (isStaff() && resource.data.posyandu == myPos()); }
+    function canWriteNew() { return isAdmin() || (isStaff() && request.resource.data.posyandu == myPos()); }
+
+    function posList() { return ['admin', 'mawar1', 'mawar2', 'mawar3', 'mawar4', 'mawar5']; }
+    function isDateStr(v) { return v is string && v.matches('^20[0-9]{2}-[01][0-9]-[0-3][0-9]$'); }
+    function taskAssigneeMatchesPosyandu(appId) {
+      return request.resource.data.assigneeId is string
+        && exists(/databases/$(database)/documents/artifacts/$(appId)/public/data/cadres/$(request.resource.data.assigneeId))
+        && get(/databases/$(database)/documents/artifacts/$(appId)/public/data/cadres/$(request.resource.data.assigneeId)).data.posyandu == request.resource.data.posyandu;
+    }
+
+    // ---------- Absen mandiri publik (tanpa login, hanya boleh MEMBUAT) ----------
+    function publicAbsenOk(appId, docId) {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['personId', 'type', 'posyandu', 'date', 'time', 'via', 'timestamp'])
+        && d.keys().hasAll(['personId', 'type', 'posyandu', 'date', 'time', 'via', 'timestamp'])
+        && d.via == 'mandiri'
+        && d.personId is string && d.personId.matches('^(ILP|KDR)-[A-Z0-9]{3,10}$')
+        && isDateStr(d.date)
+        && d.time is string && d.time.matches('^[0-2][0-9]:[0-5][0-9]$')
+        && d.posyandu in ['mawar1', 'mawar2', 'mawar3', 'mawar4', 'mawar5']
+        && docId == 'ATT-' + d.date + '-' + d.personId
+        && d.timestamp == request.time
+        && get(/databases/$(database)/documents/artifacts/$(appId)/public/data/settings/schedule).data.isOpen == true
+        && (
+          (d.type == 'participant' && d.personId.matches('^ILP-.*')
+            && exists(/databases/$(database)/documents/artifacts/$(appId)/public/data/participants/$(d.personId))
+            && get(/databases/$(database)/documents/artifacts/$(appId)/public/data/participants/$(d.personId)).data.posyandu == d.posyandu
+            && get(/databases/$(database)/documents/artifacts/$(appId)/public/data/participants/$(d.personId)).data.get('status', 'aktif') == 'aktif')
+          ||
+          (d.type == 'cadre' && d.personId.matches('^KDR-.*')
+            && exists(/databases/$(database)/documents/artifacts/$(appId)/public/data/cadres/$(d.personId))
+            && get(/databases/$(database)/documents/artifacts/$(appId)/public/data/cadres/$(d.personId)).data.posyandu == d.posyandu)
+        );
+    }
+
+    // ---------- Pengaduan publik ----------
+    function publicComplaintOk(docId) {
+      let d = request.resource.data;
+      return docId.matches('^ADU-[A-Z2-9]{10}$')
+        && d.keys().hasOnly(['name', 'posyandu', 'message', 'date', 'reply', 'timestamp'])
+        && d.keys().hasAll(['name', 'posyandu', 'message', 'date', 'reply', 'timestamp'])
+        && d.name is string && d.name.size() > 0 && d.name.size() <= 80
+        && d.message is string && d.message.size() > 0 && d.message.size() <= 1000
+        && d.posyandu in posList()
+        && d.reply == ''
+        && isDateStr(d.date)
+        && d.timestamp == request.time;
+    }
+
+    // ---------- Pengaturan: hanya jadwal yang boleh dibaca publik ----------
+    match /artifacts/{appId}/public/data/settings/{id} {
+      allow get: if id == 'schedule';
+      allow write: if isAdmin() && id == 'schedule';
+    }
+
+    // ---------- Data warga & kader: hanya petugas, dibatasi per posyandu ----------
+    match /artifacts/{appId}/public/data/participants/{id} {
+      allow read: if canReadOld();
+      allow create: if canWriteNew();
+      allow update: if canReadOld() && canWriteNew();
+      allow delete: if canReadOld();
+    }
+    match /artifacts/{appId}/public/data/cadres/{id} {
+      allow read: if canReadOld();
+      allow create: if canWriteNew();
+      allow update: if canReadOld() && canWriteNew();
+      allow delete: if canReadOld();
+    }
+    match /artifacts/{appId}/public/data/health/{id} {
+      allow read: if canReadOld();
+      allow create: if canWriteNew();
+      allow update: if canReadOld() && canWriteNew();
+      allow delete: if canReadOld();
+    }
+
+    // ---------- Kehadiran ----------
+    match /artifacts/{appId}/public/data/attendances/{id} {
+      allow read: if canReadOld();
+      allow create: if canWriteNew() || publicAbsenOk(appId, id);
+      allow update: if canReadOld() && canWriteNew();
+      allow delete: if canReadOld();
+    }
+
+    // ---------- Pengaduan: publik hanya bisa membuat, dan membaca 1 dokumen jika tahu kodenya ----------
+    match /artifacts/{appId}/public/data/complaints/{id} {
+      allow get: if id.matches('^ADU-[A-Z2-9]{10}$') || canReadOld();
+      allow list: if canReadOld();
+      allow create: if publicComplaintOk(id);
+      allow update: if canReadOld() && canWriteNew();
+      allow delete: if canReadOld();
+    }
+
+    // ---------- Modul tambahan ILP v6: hanya petugas terautentikasi ----------
+    // Setiap dokumen wajib memuat field posyandu. Admin dapat lintas posyandu;
+    // akun kader hanya dapat membaca / menulis dokumen milik posyandunya sendiri.
+    match /artifacts/{appId}/public/data/{moduleCollection}/{id} {
+      allow read: if moduleCollection in ['anc', 'immunizations', 'home_visits', 'referrals', 'logistics', 'education', 'cadre_tasks']
+        && canReadOld();
+      allow create: if moduleCollection in ['anc', 'immunizations', 'home_visits', 'referrals', 'logistics', 'education', 'cadre_tasks']
+        && request.resource.data.posyandu in ['mawar1', 'mawar2', 'mawar3', 'mawar4', 'mawar5']
+        && (moduleCollection != 'cadre_tasks' || taskAssigneeMatchesPosyandu(appId))
+        && canWriteNew();
+      allow update: if moduleCollection in ['anc', 'immunizations', 'home_visits', 'referrals', 'logistics', 'education', 'cadre_tasks']
+        && request.resource.data.posyandu in ['mawar1', 'mawar2', 'mawar3', 'mawar4', 'mawar5']
+        && (moduleCollection != 'cadre_tasks' || taskAssigneeMatchesPosyandu(appId))
+        && canReadOld() && canWriteNew();
+      allow delete: if moduleCollection in ['anc', 'immunizations', 'home_visits', 'referrals', 'logistics', 'education', 'cadre_tasks']
+        && canReadOld();
+    }
+
+    // Selain di atas (termasuk settings/credentials lama dan koleksi yang tidak dikenal): ditolak.
   }
 }

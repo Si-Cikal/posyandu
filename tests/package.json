@@ -1,0 +1,13 @@
+{
+  "name": "posyandu-ilp-v9-tests",
+  "private": true,
+  "scripts": {
+    "test:static": "node --test app-integrity.test.js cache-isolation.test.js growth-chart.test.js",
+    "test:rules": "firebase emulators:exec --only firestore --project demo-posyandu \"node --test rules.test.js\"",
+    "test": "npm run test:static && npm run test:rules"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^3.0.4",
+    "firebase": "^10.14.0"
+  }
+}
